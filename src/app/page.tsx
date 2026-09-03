@@ -2,12 +2,22 @@
 
 import React, { useState } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
+import Link from "next/link";
 import {
   decodeAudioFile,
   decodeAudioUrl,
   playStereoSplit,
   stopPlayback,
 } from "@/lib/audioEngine";
+
+/**
+ * Interface representing track metadata and playback parameters.
+ */
+interface TrackMetadata {
+  name: string;
+  source: "jamendo" | "upload";
+  id?: string;
+}
 
 /**
  * Interface representing track search results from internal API handlers.
@@ -22,20 +32,25 @@ interface TrackResult {
 }
 
 /**
- * Phase 3 Main Page with Music Search Integration & Stereo Split Audio Engine.
+ * Phase 4 Main Player Page with Auto-Save Pairing & History Navigation.
  * 
- * WHAT: Provides a dual-channel stereo split player supporting local user uploads AND Jamendo streamable tracks,
- * alongside a Spotify metadata search tab that clearly marks tracks as non-playable due to DRM.
+ * WHAT: Enables dual-channel stereo split playback, Jamendo/Spotify music searching, and automatically
+ * saves/increments track pairings to database history (`POST /api/pairings`) upon playback initiation.
  * 
- * WHY: Demonstrates Web Audio API channel routing, NextAuth authentication, and external API handling
- * while explicitly demonstrating DRM constraints (Jamendo streams work in Web Audio; Spotify metadata is read-only).
+ * WHY: Provides seamless listening persistence for authenticated users without blocking active audio playback.
  */
 export default function HomePage() {
   const { data: session, status } = useSession();
 
-  // Selected track state for Left (A) and Right (B) channels
-  const [trackAName, setTrackAName] = useState<string>("No track selected");
-  const [trackBName, setTrackBName] = useState<string>("No track selected");
+  // Active track state for Left (A) and Right (B) channels
+  const [trackA, setTrackA] = useState<TrackMetadata>({
+    name: "No track selected",
+    source: "upload",
+  });
+  const [trackB, setTrackB] = useState<TrackMetadata>({
+    name: "No track selected",
+    source: "upload",
+  });
 
   const [bufferA, setBufferA] = useState<AudioBuffer | null>(null);
   const [bufferB, setBufferB] = useState<AudioBuffer | null>(null);
@@ -59,7 +74,10 @@ export default function HomePage() {
   const handleFileAChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files?.[0];
     if (!selected) return;
-    setTrackAName(`File: ${selected.name}`);
+    setTrackA({
+      name: selected.name,
+      source: "upload",
+    });
     setLoadingLeft(true);
     setErrorMsg(null);
     try {
@@ -79,7 +97,10 @@ export default function HomePage() {
   const handleFileBChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files?.[0];
     if (!selected) return;
-    setTrackBName(`File: ${selected.name}`);
+    setTrackB({
+      name: selected.name,
+      source: "upload",
+    });
     setLoadingRight(true);
     setErrorMsg(null);
     try {
@@ -129,7 +150,11 @@ export default function HomePage() {
     if (!track.audioUrl) return;
     setLoadingLeft(true);
     setErrorMsg(null);
-    setTrackAName(`Jamendo: ${track.name} - ${track.artistName}`);
+    setTrackA({
+      name: `${track.name} - ${track.artistName}`,
+      source: "jamendo",
+      id: track.id,
+    });
     try {
       const decoded = await decodeAudioUrl(track.audioUrl);
       setBufferA(decoded);
@@ -148,7 +173,11 @@ export default function HomePage() {
     if (!track.audioUrl) return;
     setLoadingRight(true);
     setErrorMsg(null);
-    setTrackBName(`Jamendo: ${track.name} - ${track.artistName}`);
+    setTrackB({
+      name: `${track.name} - ${track.artistName}`,
+      source: "jamendo",
+      id: track.id,
+    });
     try {
       const decoded = await decodeAudioUrl(track.audioUrl);
       setBufferB(decoded);
@@ -157,6 +186,31 @@ export default function HomePage() {
     } finally {
       setLoadingRight(false);
     }
+  };
+
+  /**
+   * Fire-and-forget background helper to save pairing to history database.
+   * 
+   * WHAT: Posts track metadata to `/api/pairings` without delaying audio playback.
+   * WHY: Non-blocking analytics / history tracking ensures smooth real-time playback.
+   */
+  const savePairingInBackground = () => {
+    if (!session?.user) return;
+
+    fetch("/api/pairings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        trackASource: trackA.source,
+        trackAId: trackA.id || null,
+        trackAName: trackA.name,
+        trackBSource: trackB.source,
+        trackBId: trackB.id || null,
+        trackBName: trackB.name,
+      }),
+    }).catch((err) => {
+      console.error("Fire-and-forget pairing save failed:", err);
+    });
   };
 
   /**
@@ -171,6 +225,9 @@ export default function HomePage() {
       playStereoSplit(bufferA, bufferB);
       setIsPlaying(true);
       setErrorMsg(null);
+
+      // Record pairing to history asynchronously
+      savePairingInBackground();
     } catch (err) {
       setErrorMsg(`Playback error: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -210,11 +267,20 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="text-xs text-slate-400">
-            Sign in with Google to save custom track pairings.
+            Sign in with Google to save custom track pairings &amp; listening history.
           </div>
         )}
 
-        <div>
+        <div className="flex items-center space-x-3">
+          {session && (
+            <Link
+              href="/history"
+              className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-all"
+            >
+              📜 History &amp; Favorites
+            </Link>
+          )}
+
           {session ? (
             <button
               onClick={() => signOut()}
@@ -244,7 +310,7 @@ export default function HomePage() {
           Stereo Split Music Player
         </h1>
         <p className="text-sm text-slate-400">
-          Phase 3: Music Catalog Search (Jamendo Playable Streams + Spotify Metadata)
+          Phase 4: Pairing History, Favorites, &amp; Public Share Links
         </p>
       </div>
 
@@ -269,7 +335,7 @@ export default function HomePage() {
           </div>
 
           <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs text-slate-300 font-mono truncate">
-            {trackAName}
+            {trackA.name}
           </div>
 
           <div>
@@ -299,7 +365,7 @@ export default function HomePage() {
           </div>
 
           <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs text-slate-300 font-mono truncate">
-            {trackBName}
+            {trackB.name}
           </div>
 
           <div>
@@ -339,7 +405,7 @@ export default function HomePage() {
 
       {isPlaying && (
         <div className="max-w-3xl w-full text-center text-xs font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 rounded-xl p-3 animate-pulse">
-          ● Synchronized Playback Active (Left: {trackAName} | Right: {trackBName})
+          ● Synchronized Playback Active (Left: {trackA.name} | Right: {trackB.name})
         </div>
       )}
 
