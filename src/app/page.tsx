@@ -1,18 +1,20 @@
 "use client";
 
 import React, { useState } from "react";
+import { useSession, signIn, signOut } from "next-auth/react";
 import { decodeAudioFile, playStereoSplit, stopPlayback } from "@/lib/audioEngine";
 
 /**
- * Phase 1 Test Page for Stereo Split Audio Engine.
+ * Phase 2 Test Page for Stereo Split Audio Engine & Auth Session.
  * 
- * WHAT: Provides file upload pickers for Left Track (Channel 0) and Right Track (Channel 1),
- * decodes the selected audio files into Web Audio PCM AudioBuffers, and triggers synchronized playback.
+ * WHAT: Combines Phase 1 dual-channel audio engine playback with NextAuth.js Google Authentication state.
+ * Displays user profile credentials (name, email, avatar, user ID) when logged in.
  * 
- * WHY: Serves as the interactive validation harness for the native Web Audio API engine before adding UI,
- * database models, NextAuth, or WebSocket clock sync in upcoming phases.
+ * WHY: Validates end-to-end integration of Web Audio API stereo split functionality alongside NextAuth session handling.
  */
 export default function HomePage() {
+  const { data: session, status } = useSession();
+
   const [fileA, setFileA] = useState<File | null>(null);
   const [fileB, setFileB] = useState<File | null>(null);
   const [bufferA, setBufferA] = useState<AudioBuffer | null>(null);
@@ -89,14 +91,70 @@ export default function HomePage() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6">
+    <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-6 space-y-6">
+      {/* User Authentication Header */}
+      <div className="max-w-xl w-full bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex items-center justify-between shadow-lg">
+        {status === "loading" ? (
+          <div className="text-xs text-slate-400 animate-pulse">Checking authentication status...</div>
+        ) : session?.user ? (
+          <div className="flex items-center space-x-3">
+            {session.user.image ? (
+              <img
+                src={session.user.image}
+                alt={session.user.name || "User Avatar"}
+                className="w-10 h-10 rounded-full border border-blue-500/40"
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center font-bold text-white text-sm">
+                {session.user.name?.charAt(0) || "U"}
+              </div>
+            )}
+            <div className="text-xs">
+              <div className="font-semibold text-slate-200">{session.user.name}</div>
+              <div className="text-slate-400">{session.user.email}</div>
+              {session.user.id && (
+                <div className="text-slate-500 font-mono text-[10px] mt-0.5">ID: {session.user.id}</div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-slate-400">
+            Sign in to sync your audio pairings across devices.
+          </div>
+        )}
+
+        <div>
+          {session ? (
+            <button
+              onClick={() => signOut()}
+              id="auth-button"
+              className="px-4 py-2 rounded-xl text-xs font-semibold border border-slate-700 hover:bg-slate-800 text-slate-300 transition-all"
+            >
+              Sign Out
+            </button>
+          ) : (
+            <button
+              onClick={() => signIn("google")}
+              id="auth-button"
+              className="px-4 py-2 rounded-xl text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow-md transition-all flex items-center space-x-2"
+            >
+              <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                <path d="M12.24 10.285V13.4h6.887c-.282 1.834-2.133 5.372-6.887 5.372-4.14 0-7.517-3.433-7.517-7.657s3.377-7.657 7.517-7.657c2.355 0 3.928.995 4.827 1.859l2.443-2.354C17.84 1.543 15.28 0 12.24 0 5.48 0 0 5.48 0 12.24s5.48 12.24 12.24 12.24c7.06 0 11.75-4.96 11.75-11.96 0-.8-.08-1.405-.18-2.235H12.24z" />
+              </svg>
+              <span>Sign in with Google</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Audio Engine Testing Card */}
       <div className="max-w-xl w-full bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl space-y-6">
         <div className="text-center space-y-2">
           <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-blue-400 via-indigo-300 to-purple-400 bg-clip-text text-transparent">
             Stereo Split Music Player
           </h1>
           <p className="text-sm text-slate-400">
-            Phase 1 Engine Test: Independent Left &amp; Right Channel Playback
+            Phase 2: Core Audio Engine + NextAuth Session
           </p>
         </div>
 

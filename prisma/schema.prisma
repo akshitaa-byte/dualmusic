@@ -1,0 +1,84 @@
+// prisma/schema.prisma
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+/// Standard NextAuth Account model mapping OAuth providers (e.g. Google) to users.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+/// Standard NextAuth Session model managing active user session tokens.
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Standard NextAuth User model for user accounts and pairings relation.
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+  pairings      Pairing[]
+}
+
+/// NextAuth VerificationToken for passwordless/email verification.
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+/// Represents a saved or shared split-stereo audio track pairing.
+///
+/// WHY: Stores metadata for two tracks (Track A = Left ear, Track B = Right ear)
+/// associated with a logged-in user. Supports both royalty-free streams (Jamendo)
+/// and local file uploads, keeping track of play counts, favorites, and shareable URLs.
+model Pairing {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  trackASource String   // "jamendo" | "upload"
+  trackAId     String?  // Optional external track ID if sourced from Jamendo API
+  trackAName   String   // Human-readable title of Track A (Left ear)
+  
+  trackBSource String   // "jamendo" | "upload"
+  trackBId     String?  // Optional external track ID if sourced from Jamendo API
+  trackBName   String   // Human-readable title of Track B (Right ear)
+  
+  isFavorite   Boolean  @default(false)
+  shareSlug    String   @unique @default(uuid())
+  playCount    Int      @default(1)
+  createdAt    DateTime @default(now())
+}
