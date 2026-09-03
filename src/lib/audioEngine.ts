@@ -3,12 +3,13 @@
  * 
  * WHY: Standard HTML5 `<audio>` elements do not provide direct channel-level matrix routing.
  * By utilizing the native Web Audio API (`AudioContext`, `AudioBufferSourceNode`, and `ChannelMergerNode`),
- * we can take two independent PCM `AudioBuffer` objects decoded from raw user files and route them
+ * we can take two independent PCM `AudioBuffer` objects decoded from raw user files or stream URLs and route them
  * explicitly to separate stereo channels (Left = channel index 0, Right = channel index 1).
  * 
  * INTERVIEW EXPLANATION:
- * 1. DRM Workaround: We decode raw `File` byte streams into uncompressed `AudioBuffer` instances.
+ * 1. DRM Workaround: We decode raw PCM byte streams into uncompressed `AudioBuffer` instances.
  *    Protected streams (e.g. Spotify/Apple Music) block access to raw sample buffers due to EME/DRM.
+ *    Royalty-free streams (Jamendo API) expose raw stream URLs with CORS headers enabled.
  * 2. Precise Synchronization: We trigger `sourceNode.start(startTime)` using the single `audioContext.currentTime`
  *    clock. This ensures sample-accurate simultaneous start across both independent audio buffers without drift.
  */
@@ -61,6 +62,27 @@ export async function decodeAudioFile(file: File): Promise<AudioBuffer> {
   const ctx = getAudioContext();
   const arrayBuffer = await file.arrayBuffer();
   // decodeAudioData consumes the ArrayBuffer and returns an AudioBuffer containing PCM data
+  return await ctx.decodeAudioData(arrayBuffer);
+}
+
+/**
+ * Decodes an HTTP audio stream URL into a Web Audio API `AudioBuffer`.
+ * 
+ * WHAT: Fetches a remote audio stream URL (e.g. from Jamendo API), reads its response array buffer,
+ * and decodes it into an AudioBuffer using `decodeAudioData`.
+ * WHY: Enables remote CORS-supported audio streams to be converted into playable PCM buffers
+ * for ChannelMergerNode stereo split routing without saving the audio file locally.
+ * 
+ * @param {string} url - Direct audio stream URL.
+ * @returns {Promise<AudioBuffer>} Decoded audio buffer containing PCM channels.
+ */
+export async function decodeAudioUrl(url: string): Promise<AudioBuffer> {
+  const ctx = getAudioContext();
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`HTTP error fetching stream! Status: ${response.status}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
   return await ctx.decodeAudioData(arrayBuffer);
 }
 
