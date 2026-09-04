@@ -2,8 +2,18 @@
 
 A web player that lets you pick two songs and play them at the same time—one strictly in your left ear, the other strictly in your right ear—using the native Web Audio API.
 
-[Live demo link coming soon]
-*(Add a screenshot or GIF here)*
+![DUAL Landing Page](docs/screenshots/landing.png)
+
+## Screenshots
+
+| Main Player | AI Vibe Match |
+|---|---|
+| ![DUAL Player](docs/screenshots/player.png) | ![DUAL AI Vibe Suggest](docs/screenshots/vibe-suggest.png) |
+
+| History & Pairing Management |
+|---|
+| ![DUAL History Page](docs/screenshots/history.png) |
+
 
 ## Why I built this
 
