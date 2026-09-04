@@ -22,10 +22,38 @@ let audioContextInstance: AudioContext | null = null;
 
 /**
  * References to active AudioBufferSourceNodes currently playing.
- * Saved so they can be explicitly stopped and garbage collected.
+ * Saved so they can be explicitly stopped, restarted, or garbage collected.
  */
 let currentSourceA: AudioBufferSourceNode | null = null;
 let currentSourceB: AudioBufferSourceNode | null = null;
+
+/**
+ * References to Left and Right GainNodes for channel-independent volume control.
+ * 
+ * WHY: Inserting a GainNode into each audio channel's signal path before the ChannelMergerNode
+ * allows real-time amplification/attenuation of Left or Right audio independently without altering
+ * the raw sample PCM buffer in memory or affecting the other ear.
+ */
+let leftGainNode: GainNode | null = null;
+let rightGainNode: GainNode | null = null;
+
+/**
+ * Stores current volume level preferences (0.0 to 1.0) so volume persists across restarts.
+ */
+let currentLeftVolume = 1.0;
+let currentRightVolume = 1.0;
+
+/**
+ * Tracks playback timing metadata needed to compute real-time scrub position.
+ *
+ * WHY: AudioBufferSourceNode does not expose a live `currentTime` position. Instead,
+ * we record the AudioContext time when playback started (`startContextTime`) and the
+ * seek offset each channel began from (`startOffsetA`, `startOffsetB`). The UI then
+ * computes elapsed = (audioCtx.currentTime - startContextTime) + startOffset.
+ */
+let startContextTime = 0;   // audioContext.currentTime at the moment play was called
+let startOffsetA = 0;       // seconds into bufferA that playback began from
+let startOffsetB = 0;       // seconds into bufferB that playback began from
 
 /**
  * Retrieves or initializes the shared web `AudioContext`.
@@ -87,17 +115,56 @@ export async function decodeAudioUrl(url: string): Promise<AudioBuffer> {
 }
 
 /**
- * Plays two AudioBuffers simultaneously, splitting one to the Left ear and one to the Right ear.
+ * Adjusts the gain (volume) for the Left ear channel in real time.
  * 
- * WHAT: Creates two AudioBufferSourceNodes, routes bufferA to Channel 0 (Left) and bufferB to Channel 1 (Right)
- * using a 2-channel ChannelMergerNode, and schedules both to start at exact `audioContext.currentTime`.
- * WHY: ChannelMergerNode allows custom routing of mono/stereo inputs into distinct output speaker channels.
- * By connecting sourceA -> merger input 0 and sourceB -> merger input 1, we isolate each track to one ear.
+ * WHAT: Sets the gain parameter of the Left ear's GainNode.
+ * WHY: Provides real-time volume adjustment (0.0 = silent, 1.0 = 100% volume) while audio is playing.
+ * 
+ * @param {number} volume - Normalized volume level between 0.0 and 1.0.
+ */
+export function setLeftVolume(volume: number): void {
+  currentLeftVolume = volume;
+  if (leftGainNode && audioContextInstance) {
+    leftGainNode.gain.setValueAtTime(volume, audioContextInstance.currentTime);
+  }
+}
+
+/**
+ * Adjusts the gain (volume) for the Right ear channel in real time.
+ * 
+ * WHAT: Sets the gain parameter of the Right ear's GainNode.
+ * WHY: Provides real-time volume adjustment (0.0 = silent, 1.0 = 100% volume) while audio is playing.
+ * 
+ * @param {number} volume - Normalized volume level between 0.0 and 1.0.
+ */
+export function setRightVolume(volume: number): void {
+  currentRightVolume = volume;
+  if (rightGainNode && audioContextInstance) {
+    rightGainNode.gain.setValueAtTime(volume, audioContextInstance.currentTime);
+  }
+}
+
+/**
+ * Plays two AudioBuffers simultaneously, splitting one to the Left ear and one to the Right ear,
+ * passing through dedicated GainNodes for per-ear volume control.
+ * 
+ * WHAT: Creates two AudioBufferSourceNodes, routes bufferA -> leftGainNode -> Channel 0 (Left)
+ * and bufferB -> rightGainNode -> Channel 1 (Right) using a 2-channel ChannelMergerNode,
+ * and schedules both to start at exact `audioContext.currentTime`.
+ * WHY: Inserting GainNodes before ChannelMergerNode allows independent volume adjustment per ear.
+ * ChannelMergerNode isolates each track strictly to one speaker output pin.
  * 
  * @param {AudioBuffer} bufferA - Audio track intended exclusively for the LEFT ear.
  * @param {AudioBuffer} bufferB - Audio track intended exclusively for the RIGHT ear.
+ * @param {number} [targetTime] - Optional precise AudioContext target execution timestamp.
+ * @param {number} [offsetSeconds] - Optional start offset in seconds to skip ahead into the AudioBuffers.
  */
-export function playStereoSplit(bufferA: AudioBuffer, bufferB: AudioBuffer): void {
+export function playStereoSplit(
+  bufferA: AudioBuffer,
+  bufferB: AudioBuffer,
+  targetTime?: number,
+  offsetSeconds?: number
+): void {
   const ctx = getAudioContext();
 
   // Stop any active playback before starting a new one
@@ -111,29 +178,230 @@ export function playStereoSplit(bufferA: AudioBuffer, bufferB: AudioBuffer): voi
   sourceB.buffer = bufferB;
 
   /**
-   * ChannelMergerNode(2) combines single-channel inputs into a multi-channel output stream.
-   * Input pin 0 -> Left channel (Output 0)
-   * Input pin 1 -> Right channel (Output 1)
+   * ChannelMergerNode(2): combines two mono inputs into one stereo output.
+   *
+   * CRITICAL: Each input pin of ChannelMergerNode must receive exactly ONE channel.
+   * If a stereo node (e.g., a default GainNode fed by a 2-channel AudioBuffer) is
+   * connected to a single merger input pin, the Web Audio spec sums ALL channels of
+   * that node into that one pin, producing a mono downmix of BOTH sub-channels.
+   * This is the root cause of the cross-ear bleed: track A's right sub-channel was
+   * bleeding into the left output because the stereo GainNode was passing both
+   * L and R samples into merger pin 0.
+   *
+   * FIX: Insert a ChannelSplitterNode(2) after each source to extract only channel 0
+   * (the left/primary sub-channel of the decoded stereo buffer). Force each GainNode
+   * to strict mono with channelCount=1 + channelCountMode="explicit" so the Web Audio
+   * engine cannot silently re-upgrade it to stereo based on its input's channel count.
+   *
+   * FINAL GRAPH (every .connect() call listed explicitly below):
+   *   sourceA -> splitterA -> (output 0) -> leftGain (mono) -> merger (input 0) -> destination
+   *   sourceB -> splitterB -> (output 0) -> rightGain (mono) -> merger (input 1) -> destination
+   *
+   * There are NO direct connections from any gain node to destination.
+   * There are NO connections from any source directly to the merger.
+   * Each merger input pin receives exactly one mono channel. Zero ghost connections.
    */
   const mergerNode = ctx.createChannelMerger(2);
 
-  // Connect bufferA output to merger input 0 (Left ear)
-  sourceA.connect(mergerNode, 0, 0);
+  /**
+   * ChannelSplitterNode(2): extracts individual channels from a stereo source.
+   * Output index 0 = left sub-channel, output index 1 = right sub-channel.
+   * We only use output 0 from each splitter, giving us the primary mono signal
+   * from the decoded audio buffer without any cross-channel contamination.
+   */
+  const splitterA = ctx.createChannelSplitter(2);
+  const splitterB = ctx.createChannelSplitter(2);
 
-  // Connect bufferB output to merger input 1 (Right ear)
-  sourceB.connect(mergerNode, 0, 1);
+  /**
+   * GainNodes for independent per-ear volume control.
+   *
+   * channelCount: 1 — explicit mono.
+   * channelCountMode: "explicit" — prevents the node from silently upgrading its
+   *   channel count to match its input. Without this, a GainNode connected after
+   *   a stereo splitter output would stay at 1 channel, but with a default-mode
+   *   GainNode fed directly by a stereo source it would upgrade to 2 — undoing
+   *   the isolation we need before the merger.
+   * channelInterpretation: "speakers" — standard interpretation for the mono channel.
+   */
+  leftGainNode = ctx.createGain();
+  leftGainNode.channelCount = 1;
+  leftGainNode.channelCountMode = "explicit";
+  leftGainNode.channelInterpretation = "speakers";
+  leftGainNode.gain.setValueAtTime(currentLeftVolume, ctx.currentTime);
 
-  // Connect merger node directly to default audio output destination (speakers / headphones)
+  rightGainNode = ctx.createGain();
+  rightGainNode.channelCount = 1;
+  rightGainNode.channelCountMode = "explicit";
+  rightGainNode.channelInterpretation = "speakers";
+  rightGainNode.gain.setValueAtTime(currentRightVolume, ctx.currentTime);
+
+  // Track A: source → splitter → channel 0 only → leftGain (mono) → merger pin 0 (LEFT ear)
+  sourceA.connect(splitterA);
+  splitterA.connect(leftGainNode, 0);      // splitter output 0 → leftGain (only output 0, never output 1)
+  leftGainNode.connect(mergerNode, 0, 0);  // leftGain output 0 → merger input 0 (LEFT channel)
+
+  // Track B: source → splitter → channel 0 only → rightGain (mono) → merger pin 1 (RIGHT ear)
+  sourceB.connect(splitterB);
+  splitterB.connect(rightGainNode, 0);     // splitter output 0 → rightGain (only output 0, never output 1)
+  rightGainNode.connect(mergerNode, 0, 1); // rightGain output 0 → merger input 1 (RIGHT channel)
+
+  // Merger → speakers/headphones. This is the ONLY connection to ctx.destination.
   mergerNode.connect(ctx.destination);
 
-  // Store references for cleanup / stop functionality
+  // Store references for cleanup / stop / volume modification
   currentSourceA = sourceA;
   currentSourceB = sourceB;
 
-  // Schedule both source nodes to start at exact same execution time
-  const startTime = ctx.currentTime + 0.05; // 50ms buffer to guarantee synchronized start
-  sourceA.start(startTime);
-  sourceB.start(startTime);
+  // Schedule both source nodes to start at target time (or default 50ms buffer) with optional offsetSeconds
+  const startTime = targetTime !== undefined ? targetTime : ctx.currentTime + 0.05;
+  const startOffset = offsetSeconds && offsetSeconds > 0 ? offsetSeconds : 0;
+
+  // Record timing for scrub bar calculations
+  startContextTime = startTime;
+  startOffsetA = startOffset;
+  startOffsetB = startOffset;
+
+  sourceA.start(startTime, startOffset);
+  sourceB.start(startTime, startOffset);
+}
+
+/**
+ * Pauses active synchronized playback across both ear channels.
+ * 
+ * WHAT: Suspends the global `AudioContext` clock using `audioContext.suspend()`.
+ * WHY: `AudioBufferSourceNode` does not have a native `pause()` method. Suspending the `AudioContext`
+ * pauses the hardware clock immediately for all active nodes simultaneously, maintaining sample synchronization.
+ * 
+ * @returns {Promise<void>} Resolves when AudioContext is suspended.
+ */
+export async function pausePlayback(): Promise<void> {
+  if (audioContextInstance && audioContextInstance.state === "running") {
+    await audioContextInstance.suspend();
+  }
+}
+
+/**
+ * Resumes paused synchronized playback across both ear channels.
+ * 
+ * WHAT: Resumes the suspended global `AudioContext` clock using `audioContext.resume()`.
+ * WHY: Resuming the `AudioContext` clock unblocks playback for both tracks simultaneously at exact same hardware sample position.
+ * 
+ * @returns {Promise<void>} Resolves when AudioContext is resumed.
+ */
+export async function resumePlayback(): Promise<void> {
+  if (audioContextInstance && audioContextInstance.state === "suspended") {
+    await audioContextInstance.resume();
+  }
+}
+
+/**
+ * Restarts synchronized stereo split playback from the beginning (t = 0).
+ * 
+ * WHAT: Stops existing AudioBufferSourceNodes, creates brand new source node instances with the existing AudioBuffers,
+ * ensures AudioContext is active, and starts both nodes at `currentTime + 0.05`.
+ * WHY: Web Audio API `AudioBufferSourceNode` instances are strictly single-use. Once stopped, they cannot be restarted.
+ * Re-instantiating source nodes from the already-decoded in-memory AudioBuffers provides instantaneous restart without network/re-decoding overhead.
+ * 
+ * @param {AudioBuffer} bufferA - Already-decoded Left ear AudioBuffer.
+ * @param {AudioBuffer} bufferB - Already-decoded Right ear AudioBuffer.
+ */
+export async function restartPlayback(bufferA: AudioBuffer, bufferB: AudioBuffer): Promise<void> {
+  const ctx = getAudioContext();
+  if (ctx.state === "suspended") {
+    await ctx.resume();
+  }
+  startOffsetA = 0;
+  startOffsetB = 0;
+  playStereoSplit(bufferA, bufferB);
+}
+
+/**
+ * Returns real-time playback position info for the scrub bar UI.
+ *
+ * WHAT: Computes the current elapsed position for each channel by subtracting
+ * `startContextTime` from `audioContext.currentTime` and adding the channel's
+ * seek offset. Called every animation frame from the React component.
+ * WHY: AudioBufferSourceNode has no `.currentTime` property; this is the standard
+ * pattern for deriving live position from the AudioContext's monotonic clock.
+ *
+ * @returns {{ elapsedA: number; elapsedB: number; contextTime: number }}
+ */
+export function getPlaybackInfo(): { elapsedA: number; elapsedB: number; contextTime: number } {
+  const ctx = audioContextInstance;
+  if (!ctx || ctx.state === "suspended") {
+    return { elapsedA: startOffsetA, elapsedB: startOffsetB, contextTime: 0 };
+  }
+  const elapsed = ctx.currentTime - startContextTime;
+  return {
+    elapsedA: startOffsetA + elapsed,
+    elapsedB: startOffsetB + elapsed,
+    contextTime: ctx.currentTime,
+  };
+}
+
+/**
+ * Plays two AudioBuffers with INDEPENDENT seek offsets per channel.
+ *
+ * WHAT: Same stereo-split graph as `playStereoSplit` but each source starts
+ * at its own offset (offsetA for the left ear, offsetB for the right ear).
+ * WHY: Allows the user to position left and right tracks at completely different
+ * timestamps — e.g. Left starts at 0:15, Right starts at 0:02.
+ *
+ * @param {AudioBuffer} bufferA   - Left ear PCM buffer.
+ * @param {AudioBuffer} bufferB   - Right ear PCM buffer.
+ * @param {number}      offsetA   - Start position in seconds for bufferA.
+ * @param {number}      offsetB   - Start position in seconds for bufferB.
+ */
+export function playStereoSplitIndependent(
+  bufferA: AudioBuffer,
+  bufferB: AudioBuffer,
+  offsetA: number,
+  offsetB: number
+): void {
+  const ctx = getAudioContext();
+  stopPlayback();
+
+  const sourceA = ctx.createBufferSource();
+  const sourceB = ctx.createBufferSource();
+  sourceA.buffer = bufferA;
+  sourceB.buffer = bufferB;
+
+  const mergerNode = ctx.createChannelMerger(2);
+  const splitterA = ctx.createChannelSplitter(2);
+  const splitterB = ctx.createChannelSplitter(2);
+
+  leftGainNode = ctx.createGain();
+  leftGainNode.channelCount = 1;
+  leftGainNode.channelCountMode = "explicit";
+  leftGainNode.channelInterpretation = "speakers";
+  leftGainNode.gain.setValueAtTime(currentLeftVolume, ctx.currentTime);
+
+  rightGainNode = ctx.createGain();
+  rightGainNode.channelCount = 1;
+  rightGainNode.channelCountMode = "explicit";
+  rightGainNode.channelInterpretation = "speakers";
+  rightGainNode.gain.setValueAtTime(currentRightVolume, ctx.currentTime);
+
+  sourceA.connect(splitterA);
+  splitterA.connect(leftGainNode, 0);
+  leftGainNode.connect(mergerNode, 0, 0);
+
+  sourceB.connect(splitterB);
+  splitterB.connect(rightGainNode, 0);
+  rightGainNode.connect(mergerNode, 0, 1);
+
+  mergerNode.connect(ctx.destination);
+
+  currentSourceA = sourceA;
+  currentSourceB = sourceB;
+
+  const startTime = ctx.currentTime + 0.05;
+  startContextTime = startTime;
+  startOffsetA = offsetA >= 0 ? offsetA : 0;
+  startOffsetB = offsetB >= 0 ? offsetB : 0;
+
+  sourceA.start(startTime, startOffsetA);
+  sourceB.start(startTime, startOffsetB);
 }
 
 /**
@@ -163,4 +431,15 @@ export function stopPlayback(): void {
     }
     currentSourceB = null;
   }
+
+  if (leftGainNode) {
+    leftGainNode.disconnect();
+    leftGainNode = null;
+  }
+
+  if (rightGainNode) {
+    rightGainNode.disconnect();
+    rightGainNode = null;
+  }
 }
+

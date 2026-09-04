@@ -13,12 +13,7 @@ interface SharedPairing {
   trackBId: string | null;
   trackBName: string;
   shareSlug: string;
-  playCount: number;
   createdAt: string;
-  user?: {
-    name: string | null;
-    image: string | null;
-  };
 }
 
 /**
@@ -157,9 +152,6 @@ export default function PublicSharePage({
           <h1 className="text-2xl font-extrabold text-slate-100 mt-2">
             Stereo Split Experience
           </h1>
-          {pairing.user?.name && (
-            <p className="text-xs text-slate-400">Shared by {pairing.user.name}</p>
-          )}
         </div>
 
         {/* Channels Display */}

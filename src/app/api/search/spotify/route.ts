@@ -85,7 +85,15 @@ async function getSpotifyAccessToken(): Promise<string | null> {
  * @param {Request} req - Next.js HTTP Request context.
  * @returns {Promise<NextResponse>} JSON response containing track metadata array (isPlayable: false).
  */
+import { checkRateLimit, getClientIp, rateLimitExceededResponse } from "@/lib/rateLimit";
+
 export async function GET(req: Request) {
+  const ip = getClientIp(req);
+  const rateLimit = checkRateLimit(ip, 30, 60_000);
+  if (!rateLimit.allowed) {
+    return rateLimitExceededResponse(rateLimit.retryAfterMs);
+  }
+
   const { searchParams } = new URL(req.url);
   const query = searchParams.get("q");
 

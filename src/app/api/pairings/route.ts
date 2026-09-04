@@ -15,7 +15,15 @@ import { generateShareSlug } from "@/lib/slug";
  * @param {Request} req - HTTP request containing JSON body.
  * @returns {Promise<NextResponse>} JSON response with saved/updated Pairing record.
  */
+import { checkRateLimit, getClientIp, rateLimitExceededResponse } from "@/lib/rateLimit";
+
 export async function POST(req: Request) {
+  const ip = getClientIp(req);
+  const rateLimit = checkRateLimit(ip, 10, 60_000);
+  if (!rateLimit.allowed) {
+    return rateLimitExceededResponse(rateLimit.retryAfterMs);
+  }
+
   const session = await getServerSession(authOptions);
 
   if (!session || !session.user || !session.user.id) {

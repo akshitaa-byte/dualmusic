@@ -54,3 +54,80 @@ export async function PATCH(
     );
   }
 }
+
+/**
+ * GET API handler for retrieving a specific pairing by ID.
+ * 
+ * WHAT: Fetches a single Pairing record by ID if owned by the logged-in user.
+ * WHY: Enforces strict user authorization before exposing private pairing details.
+ */
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getServerSession(authOptions);
+
+  if (!session || !session.user || !session.user.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { id } = await params;
+
+  try {
+    const pairing = await prisma.pairing.findUnique({
+      where: { id },
+    });
+
+    if (!pairing || pairing.userId !== session.user.id) {
+      return NextResponse.json({ error: "Pairing not found or forbidden" }, { status: 404 });
+    }
+
+    return NextResponse.json({ pairing });
+  } catch (err) {
+    return NextResponse.json(
+      { error: `Failed to fetch pairing: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE API handler for deleting a specific pairing by ID.
+ * 
+ * WHAT: Deletes a single Pairing record by ID if owned by the logged-in user.
+ * WHY: Enforces strict user authorization BEFORE modifying or deleting database rows.
+ */
+export async function DELETE(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getServerSession(authOptions);
+
+  if (!session || !session.user || !session.user.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { id } = await params;
+
+  try {
+    const pairing = await prisma.pairing.findUnique({
+      where: { id },
+    });
+
+    if (!pairing || pairing.userId !== session.user.id) {
+      return NextResponse.json({ error: "Pairing not found or forbidden" }, { status: 404 });
+    }
+
+    await prisma.pairing.delete({
+      where: { id },
+    });
+
+    return NextResponse.json({ message: "Pairing deleted successfully", id });
+  } catch (err) {
+    return NextResponse.json(
+      { error: `Failed to delete pairing: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 500 }
+    );
+  }
+}
+

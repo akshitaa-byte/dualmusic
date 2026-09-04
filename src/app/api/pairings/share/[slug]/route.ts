@@ -20,13 +20,16 @@ export async function GET(
   try {
     const pairing = await prisma.pairing.findUnique({
       where: { shareSlug: slug },
-      include: {
-        user: {
-          select: {
-            name: true,
-            image: true,
-          },
-        },
+      select: {
+        id: true,
+        trackASource: true,
+        trackAId: true,
+        trackAName: true,
+        trackBSource: true,
+        trackBId: true,
+        trackBName: true,
+        shareSlug: true,
+        createdAt: true,
       },
     });
 
@@ -34,10 +37,12 @@ export async function GET(
       return NextResponse.json({ error: "Pairing not found" }, { status: 404 });
     }
 
-    // Increment playCount asynchronously for public view stats
-    await prisma.pairing.update({
+    // Increment playCount asynchronously without blocking the response (fire-and-forget)
+    void prisma.pairing.update({
       where: { id: pairing.id },
       data: { playCount: { increment: 1 } },
+    }).catch(() => {
+      // Ignore background increment errors gracefully
     });
 
     return NextResponse.json({ pairing });
