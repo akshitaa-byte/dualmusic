@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
     "ws-server": "tsx src/server/wsServer.ts"
   },
@@ -23,6 +23,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/ws": "^8.18.1",
+    "playwright": "^1.62.1",
     "prisma": "^5.22.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.13",
