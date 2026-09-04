@@ -1,89 +1,77 @@
-# 🎧 Stereo Split Music Player
+# DUAL
 
-> Play two distinct songs simultaneously — one fully in your left ear and one fully in your right ear — using native browser Web Audio API channel merging.
+A web player that lets you pick two songs and play them at the same time—one strictly in your left ear, the other strictly in your right ear—using the native Web Audio API.
 
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-Vercel-brightgreen?style=for-the-badge&logo=vercel)](https://your-app-url.vercel.app)
+[Live demo link coming soon]
+*(Add a screenshot or GIF here)*
 
-*(Live Demo link placeholder — update URL after Vercel deployment)*
+## Why I built this
 
----
+I built DUAL because I was curious about channel routing in the Web Audio API and wanted to test whether two completely separate audio tracks could be mixed and panned cleanly in the browser without channel bleed. It also gave me a chance to build a synchronized real-time playback system using NTP clock-offset algorithms over WebSockets.
 
-## 🚀 Key Features
+## Features
 
-- **True Channel Separation**: Native Web Audio API routing (`AudioBufferSourceNode` -> `GainNode` -> `ChannelMergerNode` -> `audioContext.destination`) ensuring 100% left/right ear channel isolation.
-- **Royalty-Free Audio Streaming**: Search and stream full tracks via the Jamendo v3.0 API with CORS-enabled PCM array decoding.
-- **Spotify Catalog Browsing**: Search Spotify track metadata (titles, artists, album art).
-- **Custom Audio Uploads**: Upload local MP3, WAV, FLAC, or OGG files directly into the Web Audio API decoder with MIME and file size guards.
-- **Pairing History & Favorites**: Save track pairings to PostgreSQL, toggle favorites, and manage playback history.
-- **Public Shareable Links**: Generate read-only shareable URLs (`/share/[slug]`) for any track pairing.
-- **Synchronized Listening Rooms**: Real-time room synchronized playback between multiple remote users using NTP-style high-precision clock offset calculation over WebSockets *(Requires local Node.js WebSocket server setup; not enabled in hosted production demo)*.
+- Hard left/right ear channel separation using an AudioContext channel merger graph
+- Audio search and streaming powered by the Jamendo API
+- Local audio file upload support (MP3, WAV, FLAC, OGG)
+- Independent time seek sliders, volume controls, and playback state for left and right tracks
+- LLM-powered vibe pairing suggestions with Groq, verified via Spotify metadata, and tempo-matched with real-time browser BPM detection
+- Saved pairing history and favorite management with Google sign-in
+- Public share links for track pairings
+- Optional real-time synchronized room playback between two remote listeners over WebSockets
 
----
+## Tech stack
 
-## 🛠️ Tech Stack
+- Next.js (App Router, TypeScript)
+- Tailwind CSS
+- Web Audio API (AudioContext, ChannelMergerNode, GainNode)
+- Prisma and PostgreSQL
+- NextAuth.js (Google OAuth)
+- Node.js and `ws` for the WebSocket sync server
 
-- **Framework**: Next.js 16 (App Router) + TypeScript (Strict Mode)
-- **Styling**: Tailwind CSS
-- **Database & ORM**: PostgreSQL + Prisma ORM
-- **Authentication**: NextAuth.js (Google OAuth provider)
-- **Audio Engine**: Native Web Audio API (`AudioContext`, `ChannelMergerNode`, `GainNode`) — zero third-party audio abstractions
-- **Real-Time Engine**: Node.js + `ws` WebSocket server (`src/server/wsServer.ts`)
+## How audio decoding and streaming work
 
----
+Commercial streaming APIs like Spotify and YouTube protect their streams with DRM and Encrypted Media Extensions (EME). Because they output audio through encrypted browser elements, JavaScript cannot access their raw PCM sample buffers. Without those raw buffers, the Web Audio API cannot split the audio across separate left and right channels.
 
-## 🎵 Architectural Note: Web Audio API vs DRM (Spotify / YouTube vs Jamendo)
+To handle this, DUAL uses Spotify strictly for metadata, search index, and album art lookup. The actual audio playback streams from Jamendo (which serves CORS-enabled audio files) or local uploads. The browser fetches the array buffer, decodes it into PCM data via `AudioContext.decodeAudioData()`, and routes it directly into the left or right gain node.
 
-### The Technical Constraint
-Commercial streaming platforms like **Spotify**, **Apple Music**, and **YouTube** protect raw audio streams using **Digital Rights Management (DRM)** and **Encrypted Media Extensions (EME)**. They render audio through encrypted browser element pipelines and **do not expose raw PCM sample buffers (`AudioBuffer` or CORS-accessible media streams)** to browser JavaScript. Without raw PCM sample buffers, Web Audio API nodes (`ChannelMergerNode`, `AudioContext.decodeAudioData`) cannot split audio into separate left/right physical ear channels.
+## Known limitations
 
-### The Solution
-- **Spotify API**: Used exclusively for catalog search, metadata discovery, and album artwork lookup.
-- **Jamendo API**: Serves royalty-free audio files with open `Access-Control-Allow-Origin: *` CORS headers, allowing the browser to fetch raw audio array buffers, decode them via `audioCtx.decodeAudioData()`, and feed them into our dual-channel stereo split audio graph.
+- Fixed-window rate limiting is active on public API endpoints (30 search requests per minute, 10 pairing creation requests per minute).
+- Synchronized rooms require a separate Node.js WebSocket process (`src/server/wsServer.ts`) running on port 8080. If `NEXT_PUBLIC_SYNC_ROOMS_ENABLED` is not set to `"true"`, room sync controls are excluded from the client build.
 
----
+## Setup
 
-## ⚠️ Known Limitations & Deployment Notes
+```bash
+# Install dependencies
+npm install
 
-1. **API Rate Limiting**: Search endpoints (`/api/search/jamendo`, `/api/search/spotify`) and pairing creation (`POST /api/pairings`) employ an in-memory fixed-window rate limiter (30 requests/min per IP for search, 10/min for pairings).
-2. **WebSocket Sync Rooms in Local Development**: Real-time rooms run on a standalone Node.js WebSocket process (`src/server/wsServer.ts`) on port 8080. When `NEXT_PUBLIC_SYNC_ROOMS_ENABLED` is unset or not `"true"`, the room UI and WebSocket connection logic are completely removed from the client render bundle for production deployment.
+# Run database migrations
+npx prisma migrate dev
 
----
+# Start development server
+npm run dev
 
-## ⚙️ Environment Configuration
+# Start WebSocket sync server (optional)
+npm run ws-server
+```
+
+## Environment variables
 
 Create a `.env.local` file in the root directory:
 
 ```env
-# Database & Auth
 DATABASE_URL="postgresql://user:pass@host:5432/dbname"
 NEXTAUTH_SECRET="your-nextauth-secret"
 NEXTAUTH_URL="http://localhost:3000"
 GOOGLE_CLIENT_ID="your-google-client-id"
 GOOGLE_CLIENT_SECRET="your-google-client-secret"
 
-# Music APIs
 JAMENDO_CLIENT_ID="your-jamendo-client-id"
 SPOTIFY_CLIENT_ID="your-spotify-client-id"
 SPOTIFY_CLIENT_SECRET="your-spotify-client-secret"
 
-# Feature Flags (Local Development Only)
+GROQ_API_KEY="your-groq-api-key"
+
 NEXT_PUBLIC_SYNC_ROOMS_ENABLED="true"
-```
-
----
-
-## 🧪 Getting Started
-
-```bash
-# Install dependencies
-npm install
-
-# Run Prisma database migrations
-npx prisma migrate dev
-
-# Start Next.js development server
-npm run dev
-
-# Start WebSocket Room server (optional for room sync)
-npm run ws-server
 ```
